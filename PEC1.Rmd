@@ -1,0 +1,347 @@
+---
+title: "PEC1"
+author: "Angel Ignacio Perez Samtiago"
+date: "2024-11-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1: Preparación del entorno de trabajo
+
+Comenzaremos instalando y cargando las librerías necesarias. Para ello, ejecutaremos el siguiente código en R:
+
+```{r}
+# Instalación de BiocManager si no está instalado
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+# Instalación de las librerías necesarias
+BiocManager::install(c("SummarizedExperiment", "readxl", "tidyverse", "mixOmics"))
+
+# Carga de las librerías
+library(SummarizedExperiment)
+library(readxl)
+library(tidyverse)
+library(mixOmics)
+
+```
+
+Este código instalará y cargará las librerías SummarizedExperiment para manejar datos ómicos, readxl para leer archivos Excel, tidyverse para manipulación y visualización de datos, y mixOmics para análisis multivariantes.
+
+# 2: Carga y exploración inicial del dataset
+
+Descargaremos el archivo GastricCancer_NMR.xlsx y lo guardaremos en nuestro directorio de trabajo. Luego, cargaremos las hojas de datos y picos:
+
+```{r}
+# Definimos la ruta completa al archivo Excel
+raw_dataset <- "~/Analisis_Omicos/metaboData/Datasets/2023-CIMCBTutorial/GastricCancer_NMR.xlsx"
+
+# Leemos las hojas 'Data' y 'Peak'
+data <- read_excel(raw_dataset, sheet = "Data")
+peak <- read_excel(raw_dataset, sheet = "Peak")
+
+# Exploramos las primeras filas de cada tabla
+head(data)
+head(peak)
+
+
+```
+Este código nos permitirá visualizar las primeras filas de las tablas de datos y picos, facilitando la comprensión de su estructura.
+
+# 3: Creación del objeto SummarizedExperiment
+
+Para crear un objeto SummarizedExperiment, necesitamos una matriz de expresión, información de las filas (metabolitos) y de las columnas (muestras). Procederemos de la siguiente manera:
+
+```{r}
+# Convertimos las columnas de metabolitos en una matriz de expresión
+# (filas: muestras; columnas: metabolitos)
+expression_matrix <- as.matrix(data[, 5:ncol(data)]) 
+rownames(expression_matrix) <- data$SampleID  # Usamos la primera columna de 'data' como nombres de fila
+colnames(expression_matrix) <- peak$Name  # Usamos la columna 'Name' de 'peak' como nombres de columna
+
+# Creamos los metadatos de las muestras (row_metadata) desde 'Data'
+row_metadata <- data[, 1:4]  # Seleccionamos las primeras 4 columnas
+rownames(row_metadata) <- row_metadata$SampleID  # Usamos la primera columna como nombres de fila
+row_metadata <- row_metadata[, -1]  # Eliminamos la primera columna ya que es redundante
+
+# Creamos los metadatos de los metabolitos (col_metadata) desde 'Peak'
+col_metadata <- peak[, c("Name", "Label")]  # Seleccionamos columnas relevantes
+rownames(col_metadata) <- col_metadata$Name  # Usamos 'Name' como nombres de fila
+col_metadata <- col_metadata[, -1]  # Eliminamos la columna 'Name' ya que está en los nombres de fila
+
+# Creamos el objeto SummarizedExperiment
+se_object <- SummarizedExperiment(
+  assays = list(counts = expression_matrix),
+  rowData = row_metadata,  # Metadatos de las muestras
+  colData = col_metadata   # Metadatos de los metabolitos
+)
+
+# Verificamos el contenido del objeto SummarizedExperiment
+se_object
+
+```
+## Exploración inicial de los datos
+
+# 1: Resumen de la matriz de expresión
+
+Primero, examinamos las estadísticas descriptivas de los valores en la matriz de expresión (counts):
+
+```{r}
+# Resumen estadístico básico de la matriz de expresión
+summary(assay(se_object, "counts"))
+
+```
+Esto proporciona información como mínimos, máximos, medianas, etc., de los valores de metabolitos en las muestras.
+
+# 2: Estadísticas sobre los metadatos de las muestras
+
+```{r}
+# Distribución de las clases de las muestras
+table(rowData(se_object)$Class)
+
+```
+Esto mostrará la cantidad de muestras en cada clase (QC, GC, BN, HE)
+
+# 3: Visualización de datos faltantes
+
+Podemos visualizar los datos faltantes en la matriz de expresión para entender mejor su calidad. Utilizamos un gráfico de calor de datos faltantes:
+
+```{r}
+# Instalar y cargar librería naniar si no está disponible
+if (!requireNamespace("naniar", quietly = TRUE)) {
+    install.packages("naniar")
+}
+library(naniar)
+
+# Visualización de datos faltantes
+library(ggplot2)
+gg_miss_var(as.data.frame(assay(se_object, "counts")), show_pct = TRUE)
+
+```
+
+
+```{r}
+# Extraemos las columnas relevantes de peak
+rsd <- peak$QC_RSD
+perc_missing <- peak$Perc_missing
+
+# Filtramos los metabolitos que cumplen ambos criterios
+indices_validos <- which(rsd < 20 & perc_missing < 10)
+peak_table_clean <- peak[indices_validos, ]
+
+# Actualizamos la matriz de expresión con los metabolitos válidos
+metabolitos_finales <- peak_table_clean$Name
+expression_matrix_final <- expression_matrix[, metabolitos_finales]
+
+
+```
+
+## Data Cleaning
+
+```{r}
+# Filtramos los metadatos de los metabolitos (colData) con los metabolitos válidos
+col_metadata_final <- peak_table_clean
+
+# Creamos un nuevo objeto SummarizedExperiment con los datos filtrados
+se_object_filtrado <- SummarizedExperiment(
+  assays = list(counts = expression_matrix_final),
+  rowData = rowData(se_object),
+  colData = col_metadata_final
+)
+
+# Mostramos el número de picos restantes
+cat("Número de peaks restantes:", ncol(assay(se_object_filtrado, "counts")), "\n")
+
+```
+## Normalización
+
+```{r}
+# Transformación logarítmica de la matriz de expresión
+expression_matrix_normalizada <- log2(assay(se_object_filtrado, "counts") + 1)
+
+# Actualizamos el objeto SummarizedExperiment con los datos normalizados
+se_object_normalizado <- SummarizedExperiment(
+  assays = list(counts = expression_matrix_normalizada),
+  rowData = rowData(se_object_filtrado),
+  colData = colData(se_object_filtrado)
+)
+
+# Verificamos un resumen de los datos normalizados
+summary(assay(se_object_normalizado, "counts"))
+
+```
+
+
+```{r}
+# Verificamos si hay valores faltantes o infinitos
+any(is.na(expression_matrix_normalizada))  # Valores NA
+any(is.infinite(expression_matrix_normalizada))  # Valores Inf
+
+```
+
+```{r}
+# Creamos una lista de los nombres de los metabolitos
+peaklist <- colnames(assay(se_object_filtrado, "counts"))
+
+# Extraemos los valores de los metabolitos de los datos limpios
+X <- assay(se_object_filtrado, "counts")
+
+# Transformamos los valores utilizando log2
+Xlog <- log2(X + 1)
+
+# Escalamos los datos para normalizar la varianza
+Xscale <- scale(Xlog)
+
+# Imputamos los valores faltantes utilizando el método k-NN con 3 vecinos
+
+# Instalamos el paquete impute desde Bioconductor
+BiocManager::install("impute")
+
+# Cargamos el paquete
+library(impute)
+Xknn <- impute.knn(Xscale, k = 3)$data
+
+# Realizamos el análisis PCA con la matriz de datos imputados
+pca <- prcomp(Xknn, scale. = FALSE)
+
+# Visualizamos los resultados del PCA, coloreando por clase y tipo de muestra
+if (!requireNamespace("ggfortify", quietly = TRUE)) install.packages("ggfortify")
+library(ggfortify)
+
+autoplot(pca, data = as.data.frame(rowData(se_object_filtrado)),
+         colour = "Class", shape = "SampleType") +
+    labs(title = "Evaluación de calidad: PCA de los metabolitos",
+         x = "Componente Principal 1",
+         y = "Componente Principal 2") +
+    theme_minimal()
+
+```
+
+
+```{r}
+# Gráfico PCA coloreado por SampleType
+pca_plot_sampletype <- autoplot(pca, data = as.data.frame(rowData(se_object_filtrado)),
+         colour = "SampleType") +
+    labs(title = "PCA: Coloreado por tipo de muestra",
+         x = "Componente Principal 1",
+         y = "Componente Principal 2") +
+    theme_minimal()
+
+# Gráfico PCA coloreado por Class
+pca_plot_class <- autoplot(pca, data = as.data.frame(rowData(se_object_filtrado)),
+         colour = "Class") +
+    labs(title = "PCA: Coloreado por clase biológica",
+         x = "Componente Principal 1",
+         y = "Componente Principal 2") +
+    theme_minimal()
+
+# Mostramos ambos gráficos
+pca_plot_sampletype
+pca_plot_class
+
+```
+
+
+####
+
+
+``{r}
+# Filtramos las filas para incluir solo GC y HE
+data_gc_he <- rowData(se_object_filtrado)[rowData(se_object_filtrado)$Class %in% c("GC", "HE"), ]
+samples_gc_he <- rownames(data_gc_he)
+
+# Filtramos la matriz de expresión para las muestras seleccionadas
+X_gc_he <- assay(se_object_filtrado, "counts")[samples_gc_he, ]
+groups_gc_he <- rowData(se_object_filtrado)$Class[samples_gc_he]
+
+
+
+```{r}
+# Filtramos las filas para incluir solo GC y HE
+data_gc_he <- as.data.frame(rowData(se_object_filtrado))  # Aseguramos que sea un data.frame
+data_gc_he <- data_gc_he[data_gc_he$Class %in% c("GC", "HE"), ]  # Filtramos las clases GC y HE
+
+# Verificamos si hay muestras seleccionadas
+if (nrow(data_gc_he) == 0) {
+  stop("No se encontraron muestras de las clases 'GC' o 'HE'. Verifica los datos.")
+}
+
+# Identificamos las muestras seleccionadas
+samples_gc_he <- rownames(data_gc_he)
+
+# Filtramos la matriz de expresión para estas muestras
+X_gc_he <- assay(se_object_filtrado, "counts")[samples_gc_he, , drop = FALSE]  # drop = FALSE asegura una matriz si hay una sola muestra
+
+# Extraemos las clases asociadas a estas muestras
+groups_gc_he <- data_gc_he$Class  # Usamos el data.frame filtrado
+
+
+```
+
+
+
+```{r}
+# Función para realizar pruebas estadísticas univariantes
+univariate_stats <- function(data, groups, parametric = TRUE) {
+  stats <- apply(data, 2, function(x) {
+    # Dividimos los valores según el grupo
+    group1 <- x[groups == "GC"]
+    group2 <- x[groups == "HE"]
+    
+    # Calculamos estadísticas básicas
+    mean1 <- mean(group1, na.rm = TRUE)
+    mean2 <- mean(group2, na.rm = TRUE)
+    p_missing1 <- sum(is.na(group1)) / length(group1) * 100
+    p_missing2 <- sum(is.na(group2)) / length(group2) * 100
+    
+    # Prueba estadística (paramétrica o no paramétrica)
+    if (parametric) {
+      ttest <- t.test(group1, group2)
+      p_value <- ttest$p.value
+    } else {
+      wilcox <- wilcox.test(group1, group2)
+      p_value <- wilcox$p.value
+    }
+    
+    # Normalidad (Shapiro-Wilk)
+    shapiro1 <- if (length(group1) >= 3) shapiro.test(group1)$p.value else NA
+    shapiro2 <- if (length(group2) >= 3) shapiro.test(group2)$p.value else NA
+    
+    # Creamos una fila con los resultados
+    c(
+      mean_GC = mean1, mean_HE = mean2,
+      p_missing_GC = p_missing1, p_missing_HE = p_missing2,
+      p_value = p_value,
+      shapiro_GC = shapiro1, shapiro_HE = shapiro2
+    )
+  })
+  
+  # Convertimos los resultados a un data.frame
+  as.data.frame(t(stats))
+}
+
+
+
+# Verificamos el contenido de groups_gc_he
+unique(groups_gc_he)
+
+# Contamos las muestras en cada grupo
+table(groups_gc_he)
+
+# Resumen de la matriz X_gc_he
+summary(X_gc_he)
+
+# Verificamos si hay filas o columnas completamente vacías
+rowSums(is.na(X_gc_he))
+colSums(is.na(X_gc_he))
+
+# Generamos la tabla de estadísticas
+stats_table <- univariate_stats(X_gc_he, groups_gc_he, parametric = TRUE)
+
+print(stats_table)
+
+```
+
