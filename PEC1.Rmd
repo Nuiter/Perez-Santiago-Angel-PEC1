@@ -1,0 +1,355 @@
+---
+title: "PEC1"
+output: pdf_document
+---
+
+```{r}
+# Definir las URLs de descarga de los archivos desde GitHub
+metadatosURL <- "https://raw.githubusercontent.com/nutrimetabolomics/metaboData/main/Datasets/2018-MetabotypingPaper/DataInfo_S013.csv"
+datosURL <- "https://raw.githubusercontent.com/nutrimetabolomics/metaboData/main/Datasets/2018-MetabotypingPaper/DataValues_S013.csv"
+```
+
+```{r}
+# Descargar los archivos y guardarlos localmente
+download.file(metadatosURL, destfile = "metadatosPEC1.csv")
+download.file(datosURL, destfile = "datosPEC1.csv")
+```
+
+```{r}
+# Leer los archivos CSV y asignar la primera columna como nombres de fila
+metadatosPEC1 <- read.csv("./metadatosPEC1.csv", row.names = 1)
+datosPEC1 <- read.csv("./datosPEC1.csv" , row.names = 1)
+```
+
+```{r}
+# Exploración de los objetos
+class(datosPEC1)
+class(metadatosPEC1)
+```
+
+```{r}
+# Visualizar las primeras filas de cada objeto para comprobar su contenido
+head(datosPEC1)
+head(metadatosPEC1)
+```
+
+```{r}
+# Carga de paquetes
+library(dplyr)
+library(tidyr)
+library(SummarizedExperiment)
+library(naniar)
+library(ggplot2) 
+library(pheatmap)
+library(PCAtools)
+library(dendextend)
+
+```
+
+```{r}
+# Preparar los datos: 
+# Separamos la información de las muestras (primeras 5 columnas) de los datos metabolómicos (restantes columnas)
+infoSamples <- datosPEC1[, 1:5]          # Información sobre individuos
+datosPEC1 <- datosPEC1[, -c(1:5)]          # Datos metabolómicos puros (690 columnas)
+metadatosPEC1 <- metadatosPEC1[-c(1:5), ]   # Metadatos correspondientes (690 filas)
+ 
+```
+
+```{r}
+# Convertir las variables de información de muestras a factores y crear nombres de fila informativos
+
+# Convertir a factor las columnas SURGERY, GENDER y Group
+infoSamples <- infoSamples %>%
+  mutate(SURGERY = as.factor(SURGERY), GENDER = as.factor(GENDER), Group = as.factor(Group))
+
+# Crear un identificador único para cada muestra usando SUBJECTS, Group y la primera letra de SURGERY en mayúscula
+infoSamples <- infoSamples %>%
+  mutate(RowName = paste0(SUBJECTS, "_", Group, "_", toupper(substr(SURGERY, 1, 1))))
+
+# Asignar los nombres de fila generados a infoSamples y usarlos para las filas de datosPEC1
+rownames(infoSamples) <- infoSamples$RowName
+rownames(datosPEC1) <- rownames(infoSamples)
+# Eliminar la columna auxiliar RowName para mantener el data frame limpio
+infoSamples <- infoSamples %>% select(-RowName)
+
+# Visualizar las primeras filas del data frame infoSamples modificado
+head(infoSamples)
+```
+
+```{r}
+# Validar que los nombres de fila de infoSamples y datosPEC1 coinciden
+stopifnot(all(rownames(infoSamples) == rownames(datosPEC1)))
+
+# Crear el objeto SummarizedExperiment usando los datos y metadatos preparados
+sePEC1 <- SummarizedExperiment(
+  assays = list(valores = as.matrix(datosPEC1)),
+  rowData = infoSamples,
+  colData = metadatosPEC1,
+  metadata = list(descripcion = "Dataset metabolómico 2018-MetabotypingPaper")
+)
+# Guardar el objeto SummarizedExperiment para uso posterior
+save(sePEC1, file = "sePEC1.Rda")
+```
+
+```{r}
+# Mostrar las dimensiones del objeto SummarizedExperiment
+dim(sePEC1)
+```
+
+```{r}
+# Exploración inicial de los datos:
+# Convertir el rowData a data.frame para explorar y seleccionar las variables de interés
+datosDF <- data.frame(rowData(sePEC1)[, c("SURGERY", "AGE", "GENDER", "Group")]) %>% 
+  mutate(across(c("SURGERY", "GENDER", "Group"), as.factor))
+
+# Mostrar las primeras filas del data frame de metadatos
+datosDF %>% 
+  head() %>% 
+  print()
+
+# Mostrar un resumen estadístico de las variables
+summary(datosDF)
+```
+
+```{r}
+# Explorar la distribución de las variables categóricas y numéricas
+(freq_surgery <- table(datosDF$SURGERY))    # Frecuencia de cada valor en SURGERY
+(freq_gender <- table(datosDF$GENDER))        # Frecuencia de cada valor en GENDER
+(freq_group <- table(datosDF$Group))           # Frecuencia de cada valor en Group
+
+# Frecuencia conjunta de SURGERY y Group
+(freq_surgery_Group <- table(datosDF$SURGERY, datosDF$Group))
+
+# Frecuencia conjunta de SURGERY, Group y GENDER
+(freq_surgery_Group_Gender <- table(datosDF$SURGERY, datosDF$Group, datosDF$GENDER))
+
+# Resumen estadístico de la variable numérica AGE
+(summary(datosDF$AGE))
+```
+
+```{r}
+
+# Exploración visual de los valores faltantes en la matriz transpuesta del ensayo "valores"
+traspuesta <- (as.data.frame(t(assay(sePEC1)), warn_large_data = FALSE))
+# Visualizar la matriz de valores faltantes con vis_miss y ajustar las etiquetas del eje X
+vis_miss(traspuesta) + theme(axis.text.x = element_text(size = 5, angle = 90, hjust = 1))
+
+# Calcular y mostrar el número y proporción de valores faltantes y completos
+n_miss(traspuesta)
+n_complete(traspuesta)
+prop_miss(traspuesta)
+prop_complete(traspuesta)
+pct_miss(traspuesta)
+pct_complete(traspuesta)
+```
+
+```{r}
+# Manejo de valores faltantes en el ensayo "valores":
+# Extraer la matriz de datos
+valores <- assay(sePEC1)
+# Copiar la matriz para crear una versión donde se arreglen los valores faltantes
+valores_na_fix <- valores
+
+# Reemplazar -9 y -99 por NA
+valores_na_fix[valores_na_fix == -9] <- NA
+valores_na_fix[valores_na_fix == -99] <- NA
+
+# Imputar los NA con 1
+valores_na_fix[is.na(valores_na_fix)] <- 1
+
+# Comprobar que ya no queden NA en la matriz
+sum(is.na(valores_na_fix))
+```
+
+```{r}
+# Agregar la matriz arreglada (valores_na_fix) como un nuevo ensayo en sePEC1
+assays(sePEC1)$valores_na_fix <- valores_na_fix
+# Mostrar la estructura actualizada del objeto SummarizedExperiment
+show(sePEC1)
+```
+
+<!-- A PARTIR DE AQUÍ SE MUESTRAN LAS VISUALIZACIONES -->
+
+```{r, fig.width=9, fig.height=8}
+# Boxplot de los metabolitos (cada caja representa un metabolito)
+boxplot(assay(sePEC1, "valores_na_fix"), 
+        xlab = "Valores",
+        cex.lab = 0.8, 
+        horizontal = TRUE, 
+        cex.axis = 0.4, 
+        las = 2, 
+        main = "Metabolitos", 
+        cex.main = 0.8)
+
+# Boxplot de las muestras (trasponer para que cada caja represente una muestra)
+boxplot(t(assay(sePEC1, "valores_na_fix")), 
+        ylab = "Muestra", 
+        xlab = "Valores",
+        cex.lab = 0.8, 
+        horizontal = TRUE, 
+        cex.axis = 0.7, 
+        las = 2, 
+        main = "Muestras", 
+        cex.main = 0.8)
+```
+
+
+
+TRANSFORMACIÓN DE LOS DATOS, ESTO NOS DARA UNA MEJOR VIAUALIZACIÓN DE LOS MISMOS.
+
+
+```{r}
+# Transformación de los datos:
+# Aplicar la transformación asinh para manejar valores negativos y ceros de forma robusta
+asinh_transform <- asinh(assay(sePEC1, "valores_na_fix"))
+# Agregar la transformación como un nuevo ensayo en el objeto
+assays(sePEC1)$asinh_transform <- asinh_transform
+# Mostrar el objeto actualizado
+show(sePEC1)
+```
+
+
+```{r}
+# Guardar el objeto SummarizedExperiment preprocesado y transformado
+save(sePEC1, file = "sePEC1norm.Rda")
+```
+
+
+```{r}
+# Exploración de los datos normalizados:
+# Boxplot de los metabolitos usando la transformación asinh
+boxplot(assay(sePEC1, "asinh_transform"), 
+        xlab = "lobValores",
+        cex.lab = 0.8, 
+        horizontal = TRUE, 
+        cex.axis = 0.4, 
+        las = 2, 
+        main = "Metabolitos", 
+        cex.main = 0.8)
+```
+
+
+```{r}
+# Boxplot de las muestras usando la transformación asinh (traspuesto para que cada caja sea una muestra)
+boxplot(t(assay(sePEC1, "asinh_transform")), 
+        ylab = "Muestra", 
+        xlab = "Valores",
+        cex.lab = 0.8, 
+        horizontal = TRUE, 
+        cex.axis = 0.7, 
+        las = 2, 
+        main = "Muestras", 
+        cex.main = 0.8)
+```
+
+
+
+```{r}
+# Clustering de las muestras (sin transponer la matriz, ya que filas = muestras)
+# Extraer la matriz asinh transformada (filas = muestras, columnas = metabolitos)
+datos_cluster <- (assay(sePEC1, "asinh_transform"))
+
+# Escalar los datos para normalizar cada metabolito (columna)
+datos_cluster_scaled <- scale(datos_cluster)
+
+# Calcular la matriz de distancias Euclidianas entre muestras
+dist_cluster <- dist(datos_cluster_scaled)
+
+# Realizar clustering jerárquico usando el método Ward
+hc <- hclust(dist_cluster, method = "ward.D2")
+
+# Convertir el objeto hclust a un dendrograma
+dend <- as.dendrogram(hc)
+
+# Colorar las ramas del dendrograma en 2 clusters
+dend <- color_branches(dend, k = 2)
+
+# Asignar colores a las etiquetas según el corte de clusters
+clusters <- cutree(hc, k = 2)
+labels_colors(dend) <- clusters[order.dendrogram(dend)]
+
+# Dibujar el dendrograma
+plot(dend, main = "Dendrograma coloreado de muestras", ylab = "Distancia", cex = 0.7)
+```
+
+```{r}
+# Mapa de calor sin clustering:
+# Generar un mapa de calor de la matriz escalada sin aplicar clustering a filas ni columnas, con clustering hay problemas por los valores faltantes
+pheatmap(datos_cluster_scaled, 
+         cluster_rows = FALSE, 
+         cluster_cols = FALSE,
+         main = "Mapa de calor (muestras) sin clustering", 
+         fontsize_row = 8, 
+         fontsize_col = 8)
+```
+
+```{r}
+# Mapa de calor agrupando solo por muestras:
+# Aplicar clustering solo en las filas (muestras) para visualizar la agrupación de las mismas
+pheatmap(datos_cluster_scaled, 
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE,
+         main = "Mapa de calor (muestras) agrupando por muestras",
+         fontsize_row = 8, 
+         fontsize_col = 8)
+```
+
+
+
+
+
+```{r}
+# Realizar PCA para analizar la variabilidad de las muestras:
+# Se transpone la matriz para que las columnas sean muestras, ya que PCAtools requiere que así sea
+pca_res <- pca(t(assay(sePEC1, "asinh_transform")),
+               metadata = rowData(sePEC1),
+               removeVar = 0.1)  # Elimina metabolitos con muy baja variabilidad
+
+# Generar el screeplot para visualizar el porcentaje de varianza explicado por cada componente
+screeplot(pca_res, axisLabSize = 10, titleLabSize = 22)
+
+# Generar el biplot para visualizar la dispersión de las muestras en el espacio de las componentes principales
+biplot(pca_res, 
+       showLoadings = FALSE,   # Cambia a TRUE si deseas ver las flechas de carga de los metabolitos
+       colby = "SURGERY",      # Colorear las muestras según la variable SURGERY
+       lab = NULL,             # No mostrar etiquetas para evitar saturación
+       pointSize = 3,
+       axisLabSize = 8,
+       title = "PCA de las muestras",
+       sizeLoadingsNames = 3,
+       hline = 0, vline = 0,
+       legendPosition = "right")
+```
+
+
+
+
+```{r}
+# Generar otro biplot del PCA con ajustes en labSize para refinar la visualización
+biplot(pca_res, showLoadings = FALSE, labSize = 2, pointSize = 3, axisLabSize = 8, 
+       title = "PCA de las muestras", sizeLoadingsNames = 3, colby = "SURGERY", 
+       hline = 0, vline = 0, legendPosition = "right")
+```
+
+```{r}
+# Visualización de los loadings (contribución de cada metabolito a las componentes)
+plotloadings(pca_res, rangeRetain = 0.0001, labSize = 3)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
